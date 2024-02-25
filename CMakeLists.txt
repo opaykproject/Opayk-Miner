@@ -1,0 +1,105 @@
+cmake_minimum_required(VERSION 3.12)
+project(cpuminer VERSION 2.5.1)
+
+set(CMAKE_C_STANDARD 99)
+
+add_compile_definitions(PACKAGE_NAME="${CMAKE_PROJECT_NAME}")
+add_compile_definitions(PACKAGE_VERSION="${CMAKE_PROJECT_VERSION}")
+add_compile_definitions(PACKAGE_STRING="${CMAKE_PROJECT_NAME} ${CMAKE_PROJECT_VERSION}")
+
+include(CheckIncludeFile)
+check_include_file(sys/endian.h HAVE_SYS_ENDIAN_H)
+add_compile_definitions($<$<BOOL:${HAVE_SYS_ENDIAN_H}>:HAVE_SYS_ENDIAN_H=1>)
+check_include_file(sys/param.h HAVE_SYS_PARAM_H)
+add_compile_definitions($<$<BOOL:${HAVE_SYS_PARAM_H}>:HAVE_SYS_PARAM_H=1>)
+check_include_file(syslog.h HAVE_SYSLOG_H)
+add_compile_definitions($<$<BOOL:${HAVE_SYSLOG_H}>:HAVE_SYSLOG_H=1>)
+check_include_file(sys/sysctl.h HAVE_SYS_SYSCTL_H)
+add_compile_definitions($<$<BOOL:${HAVE_SYS_SYSCTL_H}>:HAVE_SYS_SYSCTL_H=1>)
+
+include(CheckFunctionExists)
+check_function_exists(getopt_long HAVE_GETOPT_LONG)
+add_compile_definitions($<$<BOOL:${HAVE_GETOPT_LONG}>:HAVE_GETOPT_LONG=1>)
+check_function_exists(be32dec HAVE_BE32DEC)
+add_compile_definitions($<$<BOOL:${HAVE_BE32DEC}>:HAVE_DECL_BE32DEC=1>)
+check_function_exists(le32dec HAVE_LE32DEC)
+add_compile_definitions($<$<BOOL:${HAVE_LE32DEC}>:HAVE_DECL_LE32DEC=1>)
+check_function_exists(be32enc HAVE_BE32ENC)
+add_compile_definitions($<$<BOOL:${HAVE_BE32ENC}>:HAVE_DECL_BE32ENC=1>)
+check_function_exists(le32enc HAVE_LE32ENC)
+add_compile_definitions($<$<BOOL:${HAVE_LE32ENC}>:HAVE_DECL_LE32ENC=1>)
+
+find_library(LIBCURL_LIBRARIES NAMES curl)
+if(NOT LIBCURL_LIBRARIES)
+    message(FATAL_ERROR "Missing required libcurl library")
+endif()
+
+find_library(JANSSON_LIBRARIES NAMES jansson)
+if(NOT JANSSON_LIBRARIES)
+    message(FATAL_ERROR "Missing required jansson library")
+endif()
+
+add_subdirectory(progminer)
+add_subdirectory(randomx)
+
+set(SOURCES
+    cpu-miner.c
+    util.c
+    sha2.c
+)
+
+set(ENABLE_ASSEMBLY TRUE)
+if(ENABLE_ASSEMBLY)
+    add_compile_definitions(USE_ASM=1)
+    enable_language(ASM)
+    if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86")
+        set(SOURCES ${SOURCES} sha2-x86.S)
+    endif()
+    if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64")
+        set(SOURCES ${SOURCES} sha2-x64.S)
+    endif()
+    if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm")
+        set(SOURCES ${SOURCES} sha2-arm.S)
+    endif()
+    if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "ppc64le")
+        set(SOURCES ${SOURCES} sha2-ppc.S)
+    endif()
+else()
+    add_compile_definitions(USE_ASM=0)
+endif()
+
+include(CheckCSourceCompiles)
+set(CMAKE_REQUIRED_FLAGS "-mavx")
+check_c_source_compiles("int main() { __asm__ (\"vmovdqa %ymm0, %ymm1\"); return 0; }" AVX_SUPPORTED)
+if(AVX_SUPPORTED)
+    add_compile_definitions(USE_AVX=1)
+    message(STATUS "AVX assembly is available")
+
+    # Check for XOP support
+    set(CMAKE_REQUIRED_FLAGS "-mxop")
+    check_c_source_compiles("int main() { __asm__ (\"vprotd $7, %xmm0, %xmm1\"); return 0; }" XOP_SUPPORTED)
+    if(XOP_SUPPORTED)
+        add_compile_definitions(USE_XOP=1)
+        message(STATUS "XOP assembly is available")
+    else()
+        message(WARNING "The assembler does not support the XOP instruction set.")
+    endif()
+
+    # Check for AVX2 support
+    set(CMAKE_REQUIRED_FLAGS "-mavx2")
+    check_c_source_compiles("int main() { __asm__ (\"vpaddd %ymm0, %ymm1, %ymm2\"); return 0; }" AVX2_SUPPORTED)
+    if(AVX2_SUPPORTED)
+        add_compile_definitions(USE_AVX2=1)
+        message(STATUS "AVX2 assembly is available")
+    else()
+        message(WARNING "The assembler does not support the AVX2 instruction set.")
+    endif()
+else()
+    message(WARNING "The assembler does not support the AVX instruction set.")
+endif()
+
+add_executable(minerd ${SOURCES})
+
+target_compile_options(minerd PRIVATE -O3 -fno-strict-aliasing)
+target_include_directories(minerd PRIVATE ${PTHREAD_FLAGS})
+target_link_libraries(minerd PRIVATE ${LIBCURL_LIBRARIES} ${JANSSON_LIBRARIES} ${PTHREAD_LIBS} ${WS2_LIBS} progminer rx)
