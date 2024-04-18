@@ -1,0 +1,3 @@
+[submodule "progminer/ethash"]
+	path = progminer/ethash
+	url = https://github.com/chfast/ethash
